@@ -1,11 +1,16 @@
-# Go binary
+# Executables & Binaries
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-game-server-monitor
+dummy_server.exe
 
-# Output & Temporary files
-*.test
+# Temporary / PID files
+*.pid
+*.log
 *.out
+
+# VS Code / OS files
+.vscode/
+.DS_Store
