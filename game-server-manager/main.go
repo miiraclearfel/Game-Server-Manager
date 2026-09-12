@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,23 +9,39 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func startServer() {
+	if _, err := os.Stat("server.pid"); err == nil {
+		fmt.Println("Game Server is running. Check status or stop it before starting a new instance.")
+		return
+	}
+
+	logFile, err := os.OpenFile("server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		fmt.Println("Error opening log file:", err)
+		return
+	}
+
 	cmd := exec.Command("./dummy_server.exe")
 
-	err := cmd.Start()
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	err = cmd.Start()
 	if err != nil {
 		fmt.Println("Error starting the server:", err)
+		logFile.Close()
 		return
 	}
 
 	pid := cmd.Process.Pid
-	fmt.Printf("Dummy Game Server started! (PID: %d)\n", pid)
+	fmt.Printf("Dummy Game Server! (PID: %d)\n", pid)
 
 	err = os.WriteFile("server.pid", []byte(strconv.Itoa(pid)), 0644)
 	if err != nil {
-		fmt.Println("Error writing PID to file:", err)
+		fmt.Println("Error writing PID file:", err)
 	}
 }
 
@@ -56,6 +73,33 @@ func stopServer() {
 
 	os.Remove("server.pid")
 	fmt.Printf("Dummy Game Server (PID: %d) stopped!\n", pid)
+}
+
+func restartServer() {
+	fmt.Println("Restarting Game Server...")
+	stopServer()
+	time.Sleep(1 * time.Second)
+	startServer()
+}
+
+func showLogs() {
+	file, err := os.Open("server.log")
+	if err != nil {
+		fmt.Println("Error opening log file:", err)
+		return
+	}
+	defer file.Close()
+
+	fmt.Println("======== Game Server Logs ======")
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fmt.Println(scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Println("Error reading log file:", err)
+	}
 }
 
 func statusServer() {
@@ -103,7 +147,7 @@ func isWindowsProcessRunning(pid int) bool {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run main.go [start|stop|status]")
+		fmt.Println("Usage: go run main.go [start|stop|status|restart|logs]")
 		return
 	}
 
@@ -115,7 +159,11 @@ func main() {
 		stopServer()
 	case "status":
 		statusServer()
+	case "restart":
+		restartServer()
+	case "logs":
+		showLogs()
 	default:
-		fmt.Println("Unknown command:", command, "Usage: go run main.go [start|stop|status]")
+		fmt.Println("Unknown command:", command, "Usage: go run main.go [start|stop|status|restart|logs]")
 	}
 }
