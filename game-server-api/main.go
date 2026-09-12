@@ -11,15 +11,18 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
-type response struct {
+type Response struct {
 	Message string `json:"message"`
 	Status  string `json:"status,omitempty"`
 	PID     int    `json:"pid,omitempty"`
 }
 
-type logsResponse struct {
+type LogsResponse struct {
 	Logs []string `json:"logs"`
 }
 
@@ -39,14 +42,9 @@ func isWindowsProcessRunning(pid int) bool {
 }
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		sendJSON(w, http.StatusMethodNotAllowed, response{Message: "Method not allowed"})
-		return
-	}
-
 	data, err := os.ReadFile("server.pid")
 	if err != nil {
-		sendJSON(w, http.StatusOK, response{Message: "Server status", Status: "OFFLINE"})
+		sendJSON(w, http.StatusOK, Response{Message: "Server status", Status: "OFFLINE"})
 		return
 	}
 
@@ -64,27 +62,22 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isRunning {
-		sendJSON(w, http.StatusOK, response{Message: "Server status", Status: "ONLINE", PID: pid})
+		sendJSON(w, http.StatusOK, Response{Message: "Server status", Status: "ONLINE", PID: pid})
 	} else {
 		os.Remove("server.pid")
-		sendJSON(w, http.StatusOK, response{Message: "Server status", Status: "OFFLINE"})
+		sendJSON(w, http.StatusOK, Response{Message: "Server status", Status: "OFFLINE"})
 	}
 }
 
 func startHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		sendJSON(w, http.StatusMethodNotAllowed, response{Message: "Method not allowed"})
-		return
-	}
-
 	if _, err := os.Stat("server.pid"); err == nil {
-		sendJSON(w, http.StatusBadRequest, response{Message: "Server is already running"})
+		sendJSON(w, http.StatusBadRequest, Response{Message: "Server is already running"})
 		return
 	}
 
 	logFile, err := os.OpenFile("server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		sendJSON(w, http.StatusInternalServerError, response{Message: "Failed to open log file"})
+		sendJSON(w, http.StatusInternalServerError, Response{Message: "Failed to open log file"})
 		return
 	}
 
@@ -93,7 +86,7 @@ func startHandler(w http.ResponseWriter, r *http.Request) {
 	cmd.Stderr = logFile
 
 	if err := cmd.Start(); err != nil {
-		sendJSON(w, http.StatusInternalServerError, response{Message: "Failed to start the server"})
+		sendJSON(w, http.StatusInternalServerError, Response{Message: "Failed to start the server"})
 		logFile.Close()
 		return
 	}
@@ -101,19 +94,14 @@ func startHandler(w http.ResponseWriter, r *http.Request) {
 	pid := cmd.Process.Pid
 	os.WriteFile("server.pid", []byte(strconv.Itoa(pid)), 0644)
 
-	sendJSON(w, http.StatusOK, response{Message: "Server started", PID: pid})
+	sendJSON(w, http.StatusOK, Response{Message: "Server started", PID: pid})
 
 }
 
 func stopHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		sendJSON(w, http.StatusMethodNotAllowed, response{Message: "Method not allowed"})
-		return
-	}
-
 	data, err := os.ReadFile("server.pid")
 	if err != nil {
-		sendJSON(w, http.StatusBadRequest, response{Message: "Server is not running"})
+		sendJSON(w, http.StatusBadRequest, Response{Message: "Server is not running"})
 		return
 	}
 
@@ -122,23 +110,18 @@ func stopHandler(w http.ResponseWriter, r *http.Request) {
 
 	process, err := os.FindProcess(pid)
 	if err != nil || process.Kill() != nil {
-		sendJSON(w, http.StatusInternalServerError, response{Message: "Failed to stop the server"})
+		sendJSON(w, http.StatusInternalServerError, Response{Message: "Failed to stop the server"})
 		return
 	}
 
 	os.Remove("server.pid")
-	sendJSON(w, http.StatusOK, response{Message: "Server stopped", Status: "OFFLINE"})
+	sendJSON(w, http.StatusOK, Response{Message: "Server stopped", Status: "OFFLINE"})
 }
 
 func logHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		sendJSON(w, http.StatusMethodNotAllowed, response{Message: "Method not allowed"})
-		return
-	}
-
 	file, err := os.Open("server.log")
 	if err != nil {
-		sendJSON(w, http.StatusOK, logsResponse{Logs: []string{}})
+		sendJSON(w, http.StatusOK, LogsResponse{Logs: []string{}})
 		return
 	}
 	defer file.Close()
@@ -149,21 +132,28 @@ func logHandler(w http.ResponseWriter, r *http.Request) {
 		logs = append(logs, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
-		sendJSON(w, http.StatusInternalServerError, response{Message: "Failed to read log file"})
+		sendJSON(w, http.StatusInternalServerError, LogsResponse{Logs: []string{}})
 		return
 	}
 
-	sendJSON(w, http.StatusOK, logsResponse{Logs: logs})
+	sendJSON(w, http.StatusOK, LogsResponse{Logs: logs})
 }
 
 func main() {
-	http.HandleFunc("/api/status", statusHandler)
-	http.HandleFunc("/api/start", startHandler)
-	http.HandleFunc("/api/stop", stopHandler)
-	http.HandleFunc("/api/logs", logHandler)
+	r := chi.NewRouter()
+
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+
+	r.Route("/api", func(r chi.Router) {
+		r.Get("/status", statusHandler)
+		r.Post("/start", startHandler)
+		r.Post("/stop", stopHandler)
+		r.Get("/logs", logHandler)
+	})
 
 	fmt.Println("Game Server API is running on http://localhost:8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	if err := http.ListenAndServe(":8080", r); err != nil {
 		fmt.Println("Failed to start server:", err)
 	}
 }
