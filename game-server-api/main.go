@@ -32,6 +32,17 @@ func sendJSON(w http.ResponseWriter, statusCode int, payload interface{}) {
 	json.NewEncoder(w).Encode(payload)
 }
 
+func AuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiKey := r.Header.Get("X-API-Key")
+		if apiKey != "flyingpanther" {
+			sendJSON(w, http.StatusUnauthorized, Response{Message: "Unauthorized"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func isWindowsProcessRunning(pid int) bool {
 	cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid))
 	output, err := cmd.Output()
@@ -147,9 +158,13 @@ func main() {
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/status", statusHandler)
-		r.Post("/start", startHandler)
-		r.Post("/stop", stopHandler)
 		r.Get("/logs", logHandler)
+
+		r.Group(func(r chi.Router) {
+			r.Use(AuthMiddleware)
+			r.Post("/start", startHandler)
+			r.Post("/stop", stopHandler)
+		})
 	})
 
 	fmt.Println("Game Server API is running on http://localhost:8080")
