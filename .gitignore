@@ -1,0 +1,11 @@
+# Go binary
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+game-server-monitor
+
+# Output & Temporary files
+*.test
+*.out
