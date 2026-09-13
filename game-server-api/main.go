@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -11,10 +13,14 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	_ "github.com/lib/pq"
 )
+
+var db *sql.DB
 
 type Response struct {
 	Message string `json:"message"`
@@ -24,6 +30,52 @@ type Response struct {
 
 type LogsResponse struct {
 	Logs []string `json:"logs"`
+}
+
+type HistoryResponse struct {
+	History []AuditLog `json:"history"`
+}
+
+type AuditLog struct {
+	ID        int       `json:"id"`
+	Action    string    `json:"action"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func initDB() {
+	connSTR := "host=localhost port=5432 user=postgres password=dragon123 dbname=gameserverdb sslmode=disable"
+
+	var err error
+	db, err = sql.Open("postgres", connSTR)
+	if err != nil {
+		log.Fatal("Failed to connect to the database:", err)
+	}
+
+	if err = db.Ping(); err != nil {
+		log.Fatal("Failed to ping the database:", err)
+	}
+
+	query := `
+	CREATE TABLE IF NOT EXISTS audit_logs (
+		id SERIAL PRIMARY KEY,
+		action VARCHAR(50) NOT NULL,
+		status VARCHAR(50) NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	`
+	_, err = db.Exec(query)
+	if err != nil {
+		log.Fatal("Failed to create audit_logs table:", err)
+	}
+}
+
+func recordLog(action string, status string) {
+	query := "INSERT INTO audit_logs (action, status, created_at) VALUES ($1, $2, $3)"
+	_, err := db.Exec(query, action, status, time.Now())
+	if err != nil {
+		log.Println("Failed to record log:", err)
+	}
 }
 
 func sendJSON(w http.ResponseWriter, statusCode int, payload interface{}) {
@@ -55,6 +107,7 @@ func isWindowsProcessRunning(pid int) bool {
 func statusHandler(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile("server.pid")
 	if err != nil {
+		recordLog("status_check", "OFFLINE")
 		sendJSON(w, http.StatusOK, Response{Message: "Server status", Status: "OFFLINE"})
 		return
 	}
@@ -73,9 +126,11 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isRunning {
+		recordLog("status_check", "ONLINE")
 		sendJSON(w, http.StatusOK, Response{Message: "Server status", Status: "ONLINE", PID: pid})
 	} else {
 		os.Remove("server.pid")
+		recordLog("status_check", "OFFLINE")
 		sendJSON(w, http.StatusOK, Response{Message: "Server status", Status: "OFFLINE"})
 	}
 }
@@ -150,7 +205,34 @@ func logHandler(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, http.StatusOK, LogsResponse{Logs: logs})
 }
 
+func historyHandler(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query("SELECT id, action, status, created_at FROM audit_logs ORDER BY id DESC LIMIT 10")
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, Response{Message: "Failed to retrieve history"})
+		return
+	}
+	defer rows.Close()
+
+	var history []AuditLog
+	for rows.Next() {
+		var item AuditLog
+		if err := rows.Scan(&item.ID, &item.Action, &item.Status, &item.CreatedAt); err != nil {
+			continue
+		}
+		history = append(history, item)
+	}
+	if err := rows.Err(); err != nil {
+		sendJSON(w, http.StatusInternalServerError, Response{Message: "Failed to retrieve history"})
+		return
+	}
+	sendJSON(w, http.StatusOK, HistoryResponse{History: history})
+}
+
 func main() {
+
+	initDB()
+	defer db.Close()
+
 	r := chi.NewRouter()
 
 	r.Use(middleware.Logger)
@@ -159,6 +241,7 @@ func main() {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/status", statusHandler)
 		r.Get("/logs", logHandler)
+		r.Get("/history", historyHandler)
 
 		r.Group(func(r chi.Router) {
 			r.Use(AuthMiddleware)
